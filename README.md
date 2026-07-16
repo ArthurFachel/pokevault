@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![No build step](https://img.shields.io/badge/build%20step-none-lightgrey)](#)
 
-A Pokémon TCG collection tracker that runs entirely in the browser — no backend, no build step, no dependencies. Search a card by name or by its printed number, add the printings you own to one or more named collections, and track current market prices, 30-day movement, and total collection value in the currency of your choice.
+A Pokémon TCG collection tracker that runs entirely in the browser: no backend, no build step, no dependencies. Search a card by name or by its printed number, add the printings you own to one or more named collections, and track current market prices, 30-day movement, and total collection value in the currency of your choice.
 
 **Live demo →** https://arthurfachel.github.io/pokevault/
 
@@ -14,12 +14,12 @@ A Pokémon TCG collection tracker that runs entirely in the browser — no backe
 ## Features
 
 - **Live card search** via [TCGdex](https://tcgdex.dev) (up to date with new sets, no API key), with [pokemontcg.io](https://pokemontcg.io) as a legacy fallback
-- **Search by printed number** — e.g. `113/084` or `TG13/TG30` — matches every set with that printed total so you pick the right one
+- **Search by printed number** (e.g. `113/084` or `TG13/TG30`): matches every set with that printed total so you pick the right one
 - **Current market price** per variant (Holofoil, Reverse Holo, …): TCGplayer (USD), falling back to Cardmarket (EUR)
 - **30-day price movement** with a ▲/▼ badge and a per-card trend sparkline
-- **Multiple named collections** (profiles) — create, rename, delete, and switch between them
+- **Multiple named collections** (profiles): create, rename, delete, and switch between them
 - **Selectable display currency** for the collection total: native, USD, EUR, BRL, or JPY
-- **Local persistence** — collections save automatically in the browser; **Export/Import** produces a portable JSON backup
+- **Local persistence**: collections save automatically in the browser; **Export/Import** produces a portable JSON backup
 - **Sorting** by value, biggest 30-day mover, name, or recently added
 - **Demo mode** with sample data for offline/sandboxed environments
 
@@ -36,7 +36,7 @@ A Pokémon TCG collection tracker that runs entirely in the browser — no backe
 
 ## Tech stack
 
-Single self-contained `index.html` — vanilla HTML, CSS, and JavaScript. No framework, no bundler, no package manager. Data comes from [TCGdex](https://tcgdex.dev), [pokemontcg.io](https://pokemontcg.io) (fallback), [ExchangeRate-API](https://www.exchangerate-api.com), and [Frankfurter](https://frankfurter.dev) (fallback).
+Single self-contained `index.html`: vanilla HTML, CSS, and JavaScript. No framework, no bundler, no package manager. Data comes from [TCGdex](https://tcgdex.dev), [pokemontcg.io](https://pokemontcg.io) (fallback), [ExchangeRate-API](https://www.exchangerate-api.com), and [Frankfurter](https://frankfurter.dev) (fallback).
 
 ## Getting started
 
@@ -54,7 +54,7 @@ GitHub → **Settings → Pages** → *Deploy from a branch* → `main`, `/ (roo
 
 ## Contributing
 
-This started as a personal project, but issues and pull requests are welcome — bug reports, new currencies, additional data sources, or UI polish.
+This started as a personal project, but issues and pull requests are welcome: bug reports, new currencies, additional data sources, or UI polish.
 
 ## Disclaimer
 
