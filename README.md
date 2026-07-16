@@ -14,6 +14,7 @@ Card search hits the free [TCGdex](https://tcgdex.dev) API — up to date with n
 - **30-day change:** estimated from Cardmarket's `avg1` vs `avg30` sale averages (holo-aware), since TCGplayer exposes no history.
 - **Sparkline:** plots Cardmarket's `avg30 → avg7 → avg1 → trend` points per card.
 - **Number lookup:** `113/084` → matches sets whose printed total is 84, then fetches card 113 from each candidate set.
+- **Display currency:** the ledger can convert the collection value and 30-day change to USD, EUR, BRL or JPY (daily rates from the ExchangeRate-API open endpoint, Frankfurter/ECB as fallback), or show native `$ + €` totals.
 
 No build step, no dependencies — open `index.html` in a browser, or serve it statically.
 

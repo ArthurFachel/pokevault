@@ -56,6 +56,13 @@ h1{font:800 30px/1 var(--disp);letter-spacing:-.02em}
 .chval{font-size:16px}
 .chval em{font-style:normal;opacity:.75;font-size:13px}
 .sub{font-size:11.5px;color:var(--muted)}
+.cursel{
+  background:transparent;border:1px solid transparent;color:var(--gold);
+  font:700 10.5px var(--mono);letter-spacing:.05em;cursor:pointer;
+  padding:1px 3px;border-radius:6px;margin-left:5px;vertical-align:middle;
+}
+.cursel:hover{border-color:var(--line)}
+.cursel option{background:var(--panel-2);color:var(--ink)}
 .up{color:var(--up)} .down{color:var(--down)}
 
 /* ---------- panels ---------- */
@@ -234,13 +241,21 @@ select{
       </svg>
       <div>
         <h1>Poké<span class="holo-text">Vault</span></h1>
-        <p class="tag">Your TCG portfolio — live market prices &amp; 30-day moves · <span style="color:#f3c64f">v3 · profiles</span></p>
+        <p class="tag">Your TCG portfolio — live market prices &amp; 30-day moves · <span style="color:#f3c64f">v4 · currency</span></p>
       </div>
     </div>
     <div class="holo-rule"></div>
     <div class="ledger">
       <div class="cell">
-        <span class="lbl">Collection value</span>
+        <span class="lbl">Collection value
+          <select id="curSel" class="cursel" title="Display currency">
+            <option value="native">$/€</option>
+            <option value="USD">USD</option>
+            <option value="EUR">EUR</option>
+            <option value="BRL">BRL</option>
+            <option value="JPY">JPY</option>
+          </select>
+        </span>
         <span class="val holo-text" id="statValue">$0.00</span>
         <span class="sub" id="statValueSub">add cards to start the ledger</span>
       </div>
@@ -323,7 +338,7 @@ select{
 
 <script>
 'use strict';
-console.log('PokéVault v3 — profiles + TCGdex primary');
+console.log('PokéVault v4 — display currency (USD/EUR/BRL/JPY) + profiles + TCGdex');
 /* =========================================================
    PokéVault — Pokémon TCG collection tracker
    Primary data : https://tcgdex.dev  (free, no key, up-to-date sets,
@@ -347,6 +362,8 @@ const state = {
   clearArmed: false,
   profDelArmed: false,
   profEdit: null,          // null | 'new' | 'rename'
+  displayCurrency: 'native',
+  fx: { rates: null, date: null, fetchedAt: 0 },
 };
 
 /* ---------- profiles ---------- */
@@ -429,6 +446,8 @@ async function loadSaved() {
         if (profiles.length) {
           state.profiles = profiles;
           state.activeId = profiles.some(p => p.id === d.activeId) ? d.activeId : profiles[0].id;
+          if (FX_OPTIONS.includes(d.displayCurrency)) state.displayCurrency = d.displayCurrency;
+          if (d.fx && d.fx.rates) state.fx = { rates: d.fx.rates, date: d.fx.date || null, fetchedAt: d.fx.fetchedAt || 0 };
           return;
         }
       }
@@ -456,7 +475,12 @@ let saveT = null;
 function scheduleSave() {
   clearTimeout(saveT);
   saveT = setTimeout(() => {
-    store.write(KEY_V2, JSON.stringify({ activeId: state.activeId, profiles: state.profiles }));
+    store.write(KEY_V2, JSON.stringify({
+      activeId: state.activeId,
+      profiles: state.profiles,
+      displayCurrency: state.displayCurrency,
+      fx: state.fx,
+    }));
   }, 300);
 }
 
@@ -466,6 +490,74 @@ function money(v, cur) {
   if (v == null) return '—';
   if (!fmtCache[cur]) fmtCache[cur] = new Intl.NumberFormat('en-US', { style: 'currency', currency: cur });
   return fmtCache[cur].format(v);
+}
+
+/* ---------- display currency (main currencies only) ---------- */
+const FX_OPTIONS = ['native', 'USD', 'EUR', 'BRL', 'JPY'];
+
+function convert(amount, from, to) {
+  if (to === from) return amount;
+  const r = state.fx.rates;
+  if (!r || !r[from] || !r[to]) return null;
+  return amount / r[from] * r[to];
+}
+
+async function loadRates(force) {
+  const DAY = 24 * 60 * 60 * 1000;
+  if (!force && state.fx.rates && Date.now() - (state.fx.fetchedAt || 0) < DAY) return true;
+  try {
+    // primary: ExchangeRate-API open endpoint (no key, daily rates)
+    const j = await fetchJSON('https://open.er-api.com/v6/latest/USD', 15000);
+    if (j && j.result === 'success' && j.rates && j.rates.EUR) {
+      state.fx = {
+        rates: { USD: 1, EUR: j.rates.EUR, BRL: j.rates.BRL, JPY: j.rates.JPY },
+        date: (j.time_last_update_utc || '').slice(5, 16).trim() || 'latest',
+        fetchedAt: Date.now(),
+      };
+      scheduleSave(); return true;
+    }
+    throw new Error('bad payload');
+  } catch (e1) {
+    try {
+      // fallback: Frankfurter (ECB reference rates, no key)
+      const j = await fetchJSON('https://api.frankfurter.dev/v1/latest?base=USD&symbols=EUR,BRL,JPY', 15000);
+      if (j && j.rates && j.rates.EUR) {
+        state.fx = {
+          rates: { USD: 1, EUR: j.rates.EUR, BRL: j.rates.BRL, JPY: j.rates.JPY },
+          date: j.date || 'latest',
+          fetchedAt: Date.now(),
+        };
+        scheduleSave(); return true;
+      }
+    } catch (e2) { /* both providers unreachable */ }
+  }
+  return !!state.fx.rates; // stale cached rates are still usable
+}
+
+function convertedTotals(t, cur) {
+  let now = 0, ago = 0;
+  for (const c of ['USD', 'EUR']) {
+    if (t[c].now <= 0) continue;
+    const n = convert(t[c].now, c, cur);
+    const a = convert(t[c].ago, c, cur);
+    if (n == null || a == null) return null;
+    now += n; ago += a;
+  }
+  return { now, ago };
+}
+
+async function setCurrency(cur) {
+  if (!FX_OPTIONS.includes(cur)) cur = 'native';
+  state.displayCurrency = cur;
+  scheduleSave();
+  renderStats();
+  if (cur !== 'native' && !(state.fx.rates && state.fx.rates[cur])) {
+    const ok = await loadRates(true);
+    if (!ok || !state.fx.rates || !state.fx.rates[cur]) {
+      toast('Could not load exchange rates — showing native currencies');
+    }
+    renderStats();
+  }
 }
 function pctStr(p) {
   if (p == null || !isFinite(p)) return null;
@@ -545,34 +637,58 @@ function totals() {
 /* ---------- rendering ---------- */
 function renderStats() {
   const { t, copies } = totals();
-  const valueParts = [], changeParts = [];
-  for (const cur of ['USD', 'EUR']) {
-    const c = t[cur];
-    if (c.now <= 0) continue;
-    valueParts.push(money(c.now, cur));
-    const d = c.now - c.ago;
-    const pp = c.ago > 0 ? (d / c.ago * 100) : null;
-    changeParts.push({ d, pp, cur });
-  }
-  $('#statValue').textContent = valueParts.length ? valueParts.join(' + ') : money(0, 'USD');
-  $('#statValueSub').textContent = state.collection.length
-    ? (state.demo ? 'demo prices — sample data' : 'TCGplayer market · Cardmarket trend')
-    : 'add cards to start the ledger';
-
+  const cur = state.displayCurrency;
+  const conv = (cur && cur !== 'native') ? convertedTotals(t, cur) : null;
   const chEl = $('#statChange'), chSub = $('#statChangeSub');
-  const meaningful = changeParts.filter(p => Math.abs(p.d) >= 0.005);
-  if (!meaningful.length) {
-    chEl.textContent = '—'; chEl.className = 'val'; chSub.textContent = 'last 30 days';
+  const hasCards = state.collection.length > 0;
+
+  if (conv) {
+    /* single-currency converted view */
+    $('#statValue').textContent = money(conv.now, cur);
+    $('#statValueSub').textContent = !hasCards
+      ? 'add cards to start the ledger'
+      : (state.demo ? 'demo prices · converted' : 'converted · FX ' + (state.fx.date || 'latest'));
+    const d = conv.now - conv.ago;
+    if (conv.ago <= 0 || Math.abs(d) < 0.005) {
+      chEl.textContent = '—'; chEl.className = 'val'; chSub.textContent = 'last 30 days';
+    } else {
+      const up = d >= 0, pp = d / conv.ago * 100;
+      chEl.innerHTML = '<span class="' + (up ? 'up' : 'down') + '">' + (up ? '▲' : '▼') + ' '
+        + money(Math.abs(d), cur) + ' <em>(' + pctStr(pp) + ')</em></span>';
+      chEl.className = 'val chval';
+      chSub.textContent = 'last 30 days · est. from Cardmarket averages';
+    }
   } else {
-    chEl.innerHTML = meaningful.map(p => {
-      const up = p.d >= 0;
-      return '<span class="' + (up ? 'up' : 'down') + '">' + (up ? '▲' : '▼') + ' '
-        + money(Math.abs(p.d), p.cur)
-        + (p.pp != null ? ' <em>(' + pctStr(p.pp) + ')</em>' : '')
-        + '</span>';
-    }).join('<br>');
-    chEl.className = 'val chval';
-    chSub.textContent = 'last 30 days · est. from Cardmarket averages';
+    /* native (mixed USD + EUR) view */
+    const valueParts = [], changeParts = [];
+    for (const c of ['USD', 'EUR']) {
+      const x = t[c];
+      if (x.now <= 0) continue;
+      valueParts.push(money(x.now, c));
+      const d = x.now - x.ago;
+      changeParts.push({ d, pp: x.ago > 0 ? (d / x.ago * 100) : null, cur: c });
+    }
+    $('#statValue').textContent = valueParts.length
+      ? valueParts.join(' + ')
+      : money(0, cur !== 'native' ? cur : 'USD');
+    $('#statValueSub').textContent = !hasCards
+      ? 'add cards to start the ledger'
+      : (state.demo ? 'demo prices — sample data' : 'TCGplayer market · Cardmarket trend')
+        + (cur !== 'native' ? ' · FX rates unavailable' : '');
+    const meaningful = changeParts.filter(p => Math.abs(p.d) >= 0.005);
+    if (!meaningful.length) {
+      chEl.textContent = '—'; chEl.className = 'val'; chSub.textContent = 'last 30 days';
+    } else {
+      chEl.innerHTML = meaningful.map(p => {
+        const up = p.d >= 0;
+        return '<span class="' + (up ? 'up' : 'down') + '">' + (up ? '▲' : '▼') + ' '
+          + money(Math.abs(p.d), p.cur)
+          + (p.pp != null ? ' <em>(' + pctStr(p.pp) + ')</em>' : '')
+          + '</span>';
+      }).join('<br>');
+      chEl.className = 'val chval';
+      chSub.textContent = 'last 30 days · est. from Cardmarket averages';
+    }
   }
   $('#statCards').textContent = copies;
   $('#statUnique').textContent = state.collection.length;
@@ -1165,10 +1281,13 @@ function loadDemo() {
     local: 'Profiles save automatically in this browser (localStorage) — use Export for a file backup you can move between machines.',
     memory: 'No persistent storage available here — profiles live in memory for this session. Use Export to keep a file backup.',
   }[store.mode];
-  $('#footNote').textContent =
+  $('#footNote').innerHTML =
     'Market data via TCGdex, with pokemontcg.io as legacy fallback — TCGplayer (USD) and Cardmarket (EUR). '
     + '30-day change is estimated from Cardmarket 1-day vs 30-day sale averages; figures are indicative, not appraisals. '
+    + 'Currency conversion: <a href="https://www.exchangerate-api.com" target="_blank" rel="noopener" style="color:var(--muted)">Rates By Exchange Rate API</a>, with Frankfurter (ECB) as fallback. '
     + storageNote;
+
+  $('#curSel').addEventListener('change', e => setCurrency(e.target.value));
 
   $('#searchBtn').addEventListener('click', doSearch);
   $('#searchInput').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
@@ -1241,7 +1360,9 @@ function loadDemo() {
   });
 
   await loadSaved();
+  $('#curSel').value = state.displayCurrency;
   renderCollection();
+  if (state.displayCurrency !== 'native') loadRates().then(() => renderStats());
   $('#searchInput').focus();
 })();
 </script>
