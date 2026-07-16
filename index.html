@@ -226,7 +226,7 @@ select{
       </svg>
       <div>
         <h1>Poké<span class="holo-text">Vault</span></h1>
-        <p class="tag">Your TCG portfolio — live market prices &amp; 30-day moves</p>
+        <p class="tag">Your TCG portfolio — live market prices &amp; 30-day moves · <span style="color:#f3c64f">v2 · TCGdex</span></p>
       </div>
     </div>
     <div class="holo-rule"></div>
@@ -262,11 +262,11 @@ select{
   <section class="panel">
     <div class="search-row">
       <input id="searchInput" type="text" autocomplete="off" spellcheck="false"
-             placeholder='Search a card — try “Charizard” or “Umbreon VMAX”'>
+             placeholder='Search a name — or a card number like 113/084'>
       <button class="btn primary" id="searchBtn">Search</button>
       <button class="btn" id="demoBtn">Load demo cards</button>
     </div>
-    <p class="status" id="searchStatus">Prices from TCGplayer (USD), with Cardmarket (EUR) as fallback — via the pokemontcg.io API.</p>
+    <p class="status" id="searchStatus">Live data via TCGdex — new sets included. Prices: TCGplayer (USD), Cardmarket (EUR).</p>
     <div class="results" id="results"></div>
   </section>
 
@@ -301,14 +301,19 @@ select{
 
 <script>
 'use strict';
+console.log('PokéVault v2 — data: TCGdex (primary) + pokemontcg.io (legacy fallback)');
 /* =========================================================
    PokéVault — Pokémon TCG collection tracker
-   Data: https://pokemontcg.io  (free API; slow at times)
+   Primary data : https://tcgdex.dev  (free, no key, up-to-date sets,
+                  TCGplayer + Cardmarket prices embedded per card)
+   Legacy       : https://pokemontcg.io (fallback only — absorbed by
+                  Scrydex; no longer receives new sets)
    Current price : TCGplayer market (USD), fallback Cardmarket trend (EUR)
-   30-day change : Cardmarket avg1 vs avg30 (reverse-holo aware)
+   30-day change : Cardmarket avg1 vs avg30
    ========================================================= */
 
 const API = 'https://api.pokemontcg.io/v2/cards';
+const DEX = 'https://api.tcgdex.net/v2/en';
 const KEY = 'ptcg:collection:v1';
 const $ = s => document.querySelector(s);
 
@@ -464,7 +469,8 @@ function renderStats() {
 
 function thumbHTML(card) {
   const img = card.images && card.images.small;
-  return '<div class="thumb" data-big="' + esc(img || '') + '">'
+  const big = (card.images && (card.images.large || card.images.small)) || '';
+  return '<div class="thumb" data-big="' + esc(big) + '">'
     + '<span class="thumb-fb">' + esc((card.name || '?').charAt(0)) + '</span>'
     + (img ? '<img src="' + esc(img) + '" alt="" loading="lazy" onerror="this.classList.add(\'off\')">' : '')
     + '</div>';
@@ -582,7 +588,8 @@ function renderCollection() {
 /* ---------- API ---------- */
 function pickCard(c) {
   return {
-    id: c.id, name: c.name, number: c.number, rarity: c.rarity,
+    id: c.id, src: 'ptcgio',
+    name: c.name, number: c.number, rarity: c.rarity,
     images: { small: (c.images && c.images.small) || null },
     set: c.set ? {
       name: c.set.name, series: c.set.series,
@@ -609,6 +616,132 @@ function buildQuery(raw) {
   return q.includes(' ') ? 'name:"' + q + '"' : 'name:' + q + '*';
 }
 
+/* ---------- TCGdex (primary source) ---------- */
+let dexSetsCache = null;
+async function dexSets() {
+  if (!dexSetsCache) dexSetsCache = await fetchJSON(DEX + '/sets', 20000);
+  return dexSetsCache;
+}
+
+function dexDate(v) { return v ? String(v).slice(0, 10) : null; }
+
+// Normalize a full TCGdex card into the app's card shape
+function dexToCard(c) {
+  const tp = c.pricing && c.pricing.tcgplayer;
+  const cm = c.pricing && c.pricing.cardmarket;
+
+  let tcgplayer = null;
+  if (tp) {
+    const keyMap = {
+      normal: 'normal', holofoil: 'holofoil',
+      'reverse-holofoil': 'reverseHolofoil', reverse: 'reverseHolofoil',
+      '1st-edition': '1stEditionNormal', '1st-edition-holofoil': '1stEditionHolofoil',
+      unlimited: 'unlimited', 'unlimited-holofoil': 'unlimitedHolofoil',
+    };
+    const prices = {};
+    for (const k in keyMap) {
+      const v = tp[k];
+      if (v && (v.marketPrice ?? v.midPrice ?? v.lowPrice) != null) {
+        prices[keyMap[k]] = {
+          low: v.lowPrice, mid: v.midPrice, high: v.highPrice,
+          market: v.marketPrice, directLow: v.directLowPrice,
+        };
+      }
+    }
+    if (Object.keys(prices).length) tcgplayer = { updatedAt: dexDate(tp.updated), prices };
+  }
+
+  let cardmarket = null;
+  if (cm) {
+    // Cardmarket data comes in two families: plain (non-foil) and "-holo".
+    // Use the holo family when the holofoil variant leads the price, or when only holo data exists.
+    const holoLeads = !!(tcgplayer && tcgplayer.prices.holofoil) && cm['avg30-holo'] != null;
+    const useHolo = holoLeads || (cm.trend == null && cm['trend-holo'] != null);
+    const g = k => (useHolo ? cm[k + '-holo'] : cm[k]) ?? null;
+    const prices = {
+      trendPrice: g('trend'), averageSellPrice: g('avg'), lowPrice: g('low'),
+      avg1: g('avg1'), avg7: g('avg7'), avg30: g('avg30'),
+    };
+    if (Object.values(prices).some(v => v != null)) cardmarket = { updatedAt: dexDate(cm.updated), prices };
+  }
+
+  return {
+    id: c.id, src: 'tcgdex',
+    name: c.name, number: String(c.localId), rarity: c.rarity || null,
+    images: {
+      small: c.image ? c.image + '/low.webp' : null,
+      large: c.image ? c.image + '/high.webp' : null,
+    },
+    set: c.set ? {
+      name: c.set.name, series: null,
+      printedTotal: (c.set.cardCount && c.set.cardCount.official) || null,
+      releaseDate: null,
+    } : null,
+    tcgplayer, cardmarket,
+  };
+}
+
+async function dexSearchByName(q) {
+  const briefs = await fetchJSON(DEX + '/cards?name=' + encodeURIComponent(q), 20000);
+  if (!Array.isArray(briefs) || !briefs.length) return [];
+  const picks = briefs.slice(-16).reverse(); // API default order is oldest→newest; take the newest
+  const full = await Promise.all(picks.map(b =>
+    fetchJSON(DEX + '/cards/' + encodeURIComponent(b.id), 15000).catch(() => null)));
+  return full.filter(Boolean).map(dexToCard);
+}
+
+// "113/084" → every card numbered 113 in sets whose printed total is 84
+async function dexFindByNumber(nt) {
+  const sets = await dexSets();
+  const candidates = (sets || [])
+    .filter(s => s.cardCount && s.cardCount.official === nt.total)
+    .slice(0, 24);
+  if (!candidates.length) return [];
+  const tryIds = [...new Set([nt.numStripped, nt.num, nt.numUpper])];
+  const jobs = [];
+  for (const s of candidates) {
+    for (const n of tryIds) {
+      jobs.push(fetchJSON(DEX + '/sets/' + encodeURIComponent(s.id) + '/' + encodeURIComponent(n), 15000)
+        .catch(() => null));
+    }
+  }
+  const found = await Promise.all(jobs);
+  const seen = {}, out = [];
+  for (const c of found) {
+    if (c && c.id && !seen[c.id]) { seen[c.id] = 1; out.push(dexToCard(c)); }
+  }
+  return out;
+}
+
+/* ---------- input parsing ---------- */
+// Accepts "113/084", "047/198", "TG13/TG30", "GG44/GG70" — spaces around the slash are fine
+function parseNumTotal(raw) {
+  const m = raw.trim().match(/^([A-Za-z]{0,4}\d+[A-Za-z]{0,2})\s*\/\s*([A-Za-z]{0,4}\d+)$/);
+  if (!m) return null;
+  const num = m[1];
+  const total = parseInt(m[2].replace(/\D/g, ''), 10);
+  if (!total) return null;
+  return {
+    num,
+    numStripped: num.replace(/^0+(?=\d)/, ''),
+    numUpper: num.toUpperCase(),
+    total,
+  };
+}
+
+/* ---------- pokemontcg.io (legacy fallback — no longer receives new sets) ---------- */
+async function ptcgioByName(raw) {
+  const q = buildQuery(raw);
+  if (!q) return [];
+  const j = await fetchJSON(API + '?q=' + encodeURIComponent(q) + '&pageSize=16&orderBy=-set.releaseDate', 25000);
+  return (j.data || []).map(pickCard);
+}
+async function ptcgioByNumber(nt) {
+  const q = '(number:"' + nt.numStripped + '" OR number:"' + nt.num + '") set.printedTotal:' + nt.total;
+  const j = await fetchJSON(API + '?q=' + encodeURIComponent(q) + '&pageSize=20&orderBy=-set.releaseDate', 25000);
+  return (j.data || []).map(pickCard);
+}
+
 function skeletons(n) {
   let out = '';
   for (let i = 0; i < n; i++) {
@@ -618,27 +751,52 @@ function skeletons(n) {
 }
 
 async function doSearch() {
-  const q = buildQuery($('#searchInput').value);
+  const raw = $('#searchInput').value.trim();
   const st = $('#searchStatus');
-  if (!q) { st.textContent = 'Type a card name to search.'; return; }
+  if (!raw) { st.textContent = 'Type a card name, or a number like 113/084.'; return; }
+  const nt = parseNumTotal(raw);
   $('#results').innerHTML = skeletons(8);
-  st.textContent = 'Searching… the pokemontcg.io API can take a few seconds.';
+  st.textContent = nt
+    ? 'Looking up ' + nt.numStripped + '/' + nt.total + ' across sets…'
+    : 'Searching TCGdex…';
   $('#searchBtn').disabled = true;
+
+  let cards = [], fails = 0, attempts = 0, sourceNote = '';
+  async function attempt(fn) {
+    attempts++;
+    try { return await fn(); } catch (e) { fails++; return []; }
+  }
+
   try {
-    const j = await fetchJSON(API + '?q=' + encodeURIComponent(q) + '&pageSize=16&orderBy=-set.releaseDate', 25000);
-    state.results = (j.data || []).map(pickCard);
+    if (nt) {
+      cards = await attempt(() => dexFindByNumber(nt));
+      if (!cards.length) cards = await attempt(() => ptcgioByNumber(nt));
+    } else {
+      cards = await attempt(() => dexSearchByName(raw));
+      if (!cards.length) {
+        cards = await attempt(() => ptcgioByName(raw));
+        if (cards.length) sourceNote = ' (via legacy pokemontcg.io)';
+      }
+    }
+    state.results = cards;
     state.demo = false;
     renderResults();
-    st.textContent = state.results.length
-      ? state.results.length + ' printings, newest sets first — click one to preview, add the ones you own.'
-      : 'No cards found — check the spelling or try part of the name.';
-    hideBanner();
-  } catch (err) {
-    state.results = [];
-    renderResults();
-    st.textContent = 'Could not reach the card API from here.';
-    showBanner('Live prices are unreachable from this environment (the preview sandbox may block outside requests). '
-      + 'Explore with demo cards below, or open this file directly in your browser for live data.');
+
+    if (cards.length) {
+      hideBanner();
+      st.textContent = nt
+        ? cards.length + ' card' + (cards.length === 1 ? '' : 's') + ' numbered '
+          + nt.numStripped + '/' + nt.total + ' — pick the set that matches yours.'
+        : cards.length + ' printings, newest first' + sourceNote + ' — add the ones you own.';
+    } else if (attempts > 0 && fails === attempts) {
+      st.textContent = 'Could not reach the card APIs from here.';
+      showBanner('Live data is unreachable from this environment (the preview sandbox may block outside requests). '
+        + 'Explore with demo cards below, or open this file directly in your browser for live data.');
+    } else {
+      st.textContent = nt
+        ? 'No card found for ' + nt.numStripped + '/' + nt.total + ' — double-check the number and the set total.'
+        : 'No cards found — check the spelling or try part of the name.';
+    }
   } finally {
     $('#searchBtn').disabled = false;
   }
@@ -648,26 +806,36 @@ async function refreshPrices() {
   if (!state.collection.length) { toast('Nothing to refresh yet'); return; }
   const btn = $('#refreshBtn');
   btn.disabled = true; btn.textContent = 'Refreshing…';
-  const ids = state.collection.map(e => e.card.id);
-  let ok = 0;
+  let ok = 0, failed = false;
   try {
-    for (let i = 0; i < ids.length; i += 15) {
-      const chunk = ids.slice(i, i + 15);
-      const q = '(' + chunk.map(id => 'id:"' + id + '"').join(' OR ') + ')';
-      const j = await fetchJSON(API + '?q=' + encodeURIComponent(q) + '&pageSize=60', 25000);
-      for (const c of (j.data || [])) {
-        const e = state.collection.find(x => x.card.id === c.id);
-        if (e) { e.card = pickCard(c); ok++; }
-      }
+    // TCGdex cards: refetch individually, in parallel
+    const dexEntries = state.collection.filter(e => e.card.src === 'tcgdex');
+    if (dexEntries.length) {
+      const res = await Promise.all(dexEntries.map(e =>
+        fetchJSON(DEX + '/cards/' + encodeURIComponent(e.card.id), 20000).catch(() => null)));
+      res.forEach((c, i) => {
+        if (c && c.id) { dexEntries[i].card = dexToCard(c); ok++; }
+        else failed = true;
+      });
+    }
+    // Legacy pokemontcg.io cards: chunked OR queries
+    const pioIds = state.collection.filter(e => e.card.src !== 'tcgdex').map(e => e.card.id);
+    for (let i = 0; i < pioIds.length; i += 15) {
+      const chunk = pioIds.slice(i, i + 15);
+      try {
+        const q = '(' + chunk.map(id => 'id:"' + id + '"').join(' OR ') + ')';
+        const j = await fetchJSON(API + '?q=' + encodeURIComponent(q) + '&pageSize=60', 25000);
+        for (const c of (j.data || [])) {
+          const e = state.collection.find(x => x.card.id === c.id && x.card.src !== 'tcgdex');
+          if (e) { e.card = pickCard(c); ok++; }
+        }
+      } catch (e) { failed = true; }
     }
     state.demo = state.demo && ok === 0;
     scheduleSave(); renderCollection();
-    toast('Prices refreshed for ' + ok + ' card' + (ok === 1 ? '' : 's'));
+    toast(ok ? 'Prices refreshed for ' + ok + ' card' + (ok === 1 ? '' : 's') : 'Could not refresh prices');
     if (ok) hideBanner();
-  } catch (err) {
-    toast('Could not reach the price API');
-    showBanner('Price refresh failed — the API is unreachable from this environment. '
-      + 'Open the file directly in your browser for live data.');
+    if (failed && ok) toast('Some cards could not be refreshed');
   } finally {
     btn.disabled = false; btn.textContent = '⟳ Refresh prices';
   }
@@ -793,7 +961,7 @@ function loadDemo() {
 /* ---------- wire up ---------- */
 (async function init() {
   $('#footNote').textContent =
-    'Market data via pokemontcg.io — TCGplayer (USD) and Cardmarket (EUR). '
+    'Market data via TCGdex, with pokemontcg.io as legacy fallback — TCGplayer (USD) and Cardmarket (EUR). '
     + '30-day change is estimated from Cardmarket 1-day vs 30-day sale averages; figures are indicative, not appraisals. '
     + (hasStore
       ? 'Your collection saves automatically and will be here next time.'
