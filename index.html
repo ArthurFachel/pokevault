@@ -135,6 +135,14 @@ h2{font:700 19px var(--disp);letter-spacing:-.01em}
 
 /* ---------- collection ---------- */
 .coll-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:space-between}
+.profilebar{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.btn.mini{padding:8px 11px;line-height:1}
+.profedit{display:flex;gap:9px;margin-top:12px;flex-wrap:wrap;align-items:center}
+.profedit input{
+  flex:1;min-width:170px;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;
+  color:var(--ink);font:500 14px var(--body);padding:9px 13px;
+}
+.profedit input::placeholder{color:var(--muted)}
 .coll-tools{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
 .sortwrap{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:7px}
 select{
@@ -226,7 +234,7 @@ select{
       </svg>
       <div>
         <h1>Poké<span class="holo-text">Vault</span></h1>
-        <p class="tag">Your TCG portfolio — live market prices &amp; 30-day moves · <span style="color:#f3c64f">v2 · TCGdex</span></p>
+        <p class="tag">Your TCG portfolio — live market prices &amp; 30-day moves · <span style="color:#f3c64f">v3 · profiles</span></p>
       </div>
     </div>
     <div class="holo-rule"></div>
@@ -272,7 +280,13 @@ select{
 
   <section class="panel">
     <div class="coll-head">
-      <h2>Collection</h2>
+      <div class="profilebar">
+        <h2>Collection</h2>
+        <select id="profileSel" title="Switch collection profile"></select>
+        <button class="btn mini" id="profNew" title="New profile">＋</button>
+        <button class="btn mini" id="profRen" title="Rename this profile">✎</button>
+        <button class="btn mini danger" id="profDel" title="Delete this profile">🗑</button>
+      </div>
       <div class="coll-tools">
         <label class="sortwrap">Sort
           <select id="sortSel">
@@ -283,9 +297,17 @@ select{
           </select>
         </label>
         <button class="btn" id="refreshBtn">⟳ Refresh prices</button>
-        <button class="btn danger" id="clearBtn">Clear all</button>
+        <button class="btn" id="exportBtn" title="Download all profiles as a JSON backup file">Export</button>
+        <button class="btn" id="importBtn" title="Load profiles from a backup file">Import</button>
+        <button class="btn danger" id="clearBtn">Clear cards</button>
       </div>
     </div>
+    <div class="profedit hide" id="profEdit">
+      <input id="profName" type="text" maxlength="40" placeholder="Profile name" autocomplete="off">
+      <button class="btn primary" id="profOk">Save</button>
+      <button class="btn" id="profCancel">Cancel</button>
+    </div>
+    <input type="file" id="importFile" accept=".json,application/json" class="hide">
     <div id="rows"></div>
     <div class="empty" id="emptyState">
       <b>No cards yet.</b><br>
@@ -301,7 +323,7 @@ select{
 
 <script>
 'use strict';
-console.log('PokéVault v2 — data: TCGdex (primary) + pokemontcg.io (legacy fallback)');
+console.log('PokéVault v3 — profiles + TCGdex primary');
 /* =========================================================
    PokéVault — Pokémon TCG collection tracker
    Primary data : https://tcgdex.dev  (free, no key, up-to-date sets,
@@ -314,38 +336,127 @@ console.log('PokéVault v2 — data: TCGdex (primary) + pokemontcg.io (legacy fa
 
 const API = 'https://api.pokemontcg.io/v2/cards';
 const DEX = 'https://api.tcgdex.net/v2/en';
-const KEY = 'ptcg:collection:v1';
 const $ = s => document.querySelector(s);
 
 const state = {
-  collection: [],          // [{ card, qty, addedAt }]
+  profiles: [],            // [{ id, name, collection: [{card, qty, addedAt}], createdAt }]
+  activeId: null,
   results: [],
   sort: 'value',
   demo: false,
   clearArmed: false,
+  profDelArmed: false,
+  profEdit: null,          // null | 'new' | 'rename'
 };
 
-/* ---------- persistence (Claude artifact storage if available) ---------- */
-const hasStore = typeof window !== 'undefined'
+/* ---------- profiles ---------- */
+function newProfile(name) {
+  return {
+    id: 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    name, collection: [], createdAt: Date.now(),
+  };
+}
+function activeProfile() {
+  let p = state.profiles.find(x => x.id === state.activeId);
+  if (!p) { p = state.profiles[0]; if (p) state.activeId = p.id; }
+  if (!p) { p = newProfile('Main'); state.profiles.push(p); state.activeId = p.id; }
+  return p;
+}
+// Every existing read/write of state.collection transparently targets the active profile
+Object.defineProperty(state, 'collection', {
+  get() { return activeProfile().collection; },
+  set(v) { activeProfile().collection = v; },
+});
+
+/* ---------- persistence: artifact storage → localStorage → memory ---------- */
+const KEY_V1 = 'ptcg:collection:v1';   // legacy single collection
+const KEY_V2 = 'ptcg:vault:v2';        // { activeId, profiles }
+
+const hasArtifactStore = typeof window !== 'undefined'
   && window.storage && typeof window.storage.get === 'function';
 
-async function loadSaved() {
-  if (!hasStore) return;
+function hasLocalStore() {
   try {
-    const r = await window.storage.get(KEY, false);
-    if (r && r.value) {
-      const d = JSON.parse(r.value);
-      if (Array.isArray(d)) state.collection = d;
-    }
-  } catch (e) { /* first run — key doesn't exist yet */ }
+    localStorage.setItem('ptcg:test', '1');
+    localStorage.removeItem('ptcg:test');
+    return true;
+  } catch (e) { return false; }
 }
+
+const store = (() => {
+  if (hasArtifactStore) {
+    return {
+      mode: 'artifact',
+      async read(key) {
+        try { const r = await window.storage.get(key, false); return (r && r.value) || null; }
+        catch (e) { return null; }
+      },
+      async write(key, val) {
+        try { await window.storage.set(key, val, false); }
+        catch (e) { console.error('Save failed', e); }
+      },
+    };
+  }
+  if (hasLocalStore()) {
+    return {
+      mode: 'local',
+      async read(key) { try { return localStorage.getItem(key); } catch (e) { return null; } },
+      async write(key, val) { try { localStorage.setItem(key, val); } catch (e) { console.error('Save failed', e); } },
+    };
+  }
+  return { mode: 'memory', async read() { return null; }, async write() {} };
+})();
+
+function sanitizeEntries(arr) {
+  return (Array.isArray(arr) ? arr : [])
+    .filter(e => e && e.card && e.card.id)
+    .map(e => ({
+      card: e.card,
+      qty: e.qty > 0 ? Math.floor(e.qty) : 1,
+      addedAt: e.addedAt || Date.now(),
+    }));
+}
+
+async function loadSaved() {
+  const rawV2 = await store.read(KEY_V2);
+  if (rawV2) {
+    try {
+      const d = JSON.parse(rawV2);
+      if (d && Array.isArray(d.profiles)) {
+        const profiles = d.profiles
+          .filter(p => p && p.id && p.name)
+          .map(p => ({ id: p.id, name: String(p.name), collection: sanitizeEntries(p.collection), createdAt: p.createdAt || Date.now() }));
+        if (profiles.length) {
+          state.profiles = profiles;
+          state.activeId = profiles.some(p => p.id === d.activeId) ? d.activeId : profiles[0].id;
+          return;
+        }
+      }
+    } catch (e) { /* corrupt vault — fall through */ }
+  }
+  // migrate the legacy single-collection format if present
+  const rawV1 = await store.read(KEY_V1);
+  if (rawV1) {
+    try {
+      const arr = sanitizeEntries(JSON.parse(rawV1));
+      if (arr.length) {
+        const p = newProfile('Main');
+        p.collection = arr;
+        state.profiles = [p];
+        state.activeId = p.id;
+        scheduleSave();
+        return;
+      }
+    } catch (e) { /* ignore */ }
+  }
+  activeProfile(); // guarantees a default profile exists
+}
+
 let saveT = null;
 function scheduleSave() {
-  if (!hasStore) return;
   clearTimeout(saveT);
-  saveT = setTimeout(async () => {
-    try { await window.storage.set(KEY, JSON.stringify(state.collection), false); }
-    catch (e) { console.error('Save failed', e); }
+  saveT = setTimeout(() => {
+    store.write(KEY_V2, JSON.stringify({ activeId: state.activeId, profiles: state.profiles }));
   }, 300);
 }
 
@@ -578,7 +689,15 @@ const SORTS = {
   recent: (a, b) => (b.addedAt || 0) - (a.addedAt || 0),
 };
 
+function renderProfiles() {
+  const sel = $('#profileSel');
+  sel.innerHTML = state.profiles.map(p =>
+    '<option value="' + esc(p.id) + '"' + (p.id === state.activeId ? ' selected' : '') + '>'
+    + esc(p.name) + ' (' + p.collection.length + ')</option>').join('');
+}
+
 function renderCollection() {
+  renderProfiles();
   const list = [...state.collection].sort(SORTS[state.sort] || SORTS.value);
   $('#emptyState').classList.toggle('hide', list.length > 0);
   $('#rows').innerHTML = list.map(rowHTML).join('');
@@ -882,6 +1001,87 @@ function toast(msg) {
   setTimeout(() => { t.classList.remove('in'); setTimeout(() => t.remove(), 300); }, 2200);
 }
 
+/* ---------- profile actions ---------- */
+function openProfEdit(mode) {
+  state.profEdit = mode;
+  const inp = $('#profName');
+  $('#profEdit').classList.remove('hide');
+  inp.value = mode === 'rename' ? activeProfile().name : '';
+  inp.placeholder = mode === 'new' ? 'New profile name (e.g. Binder, Trades…)' : 'Profile name';
+  inp.focus(); inp.select();
+}
+function closeProfEdit() { state.profEdit = null; $('#profEdit').classList.add('hide'); }
+function confirmProfEdit() {
+  const name = $('#profName').value.trim();
+  if (!name) { $('#profName').focus(); return; }
+  if (state.profEdit === 'new') {
+    const p = newProfile(name);
+    state.profiles.push(p);
+    state.activeId = p.id;
+    toast('Profile "' + name + '" created');
+  } else if (state.profEdit === 'rename') {
+    activeProfile().name = name;
+    toast('Profile renamed to "' + name + '"');
+  }
+  closeProfEdit(); scheduleSave(); renderCollection(); renderResults();
+}
+
+/* ---------- backup: export / import ---------- */
+function exportVault() {
+  const data = {
+    app: 'pokevault', version: 2,
+    exportedAt: new Date().toISOString(),
+    activeId: state.activeId, profiles: state.profiles,
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'pokevault-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  toast('Backup downloaded');
+}
+
+function importVault(file) {
+  const rd = new FileReader();
+  rd.onload = () => {
+    try {
+      const d = JSON.parse(rd.result);
+      const uniqueName = n => {
+        let name = (n && String(n).trim()) || 'Imported';
+        while (state.profiles.some(p => p.name === name)) name += ' (imported)';
+        return name;
+      };
+      let added = 0;
+      if (d && Array.isArray(d.profiles)) {           // full vault backup
+        for (const p of d.profiles) {
+          const cards = sanitizeEntries(p && p.collection);
+          const np = newProfile(uniqueName(p && p.name));
+          np.collection = cards;
+          state.profiles.push(np);
+          state.activeId = np.id;
+          added++;
+        }
+      } else if (Array.isArray(d)) {                  // legacy single-collection export
+        const np = newProfile(uniqueName('Imported'));
+        np.collection = sanitizeEntries(d);
+        state.profiles.push(np);
+        state.activeId = np.id;
+        added++;
+      }
+      if (added) {
+        scheduleSave(); renderCollection(); renderResults();
+        toast(added + ' profile' + (added === 1 ? '' : 's') + ' imported');
+      } else {
+        toast('No profiles found in that file');
+      }
+    } catch (e) {
+      toast('Could not read that file — is it a PokéVault backup?');
+    }
+  };
+  rd.readAsText(file);
+}
+
 /* ---------- hover preview (desktop) ---------- */
 (function initPreview() {
   if (!window.matchMedia || !matchMedia('(pointer:fine)').matches) return;
@@ -960,12 +1160,15 @@ function loadDemo() {
 
 /* ---------- wire up ---------- */
 (async function init() {
+  const storageNote = {
+    artifact: 'Profiles save automatically in this Claude session.',
+    local: 'Profiles save automatically in this browser (localStorage) — use Export for a file backup you can move between machines.',
+    memory: 'No persistent storage available here — profiles live in memory for this session. Use Export to keep a file backup.',
+  }[store.mode];
   $('#footNote').textContent =
     'Market data via TCGdex, with pokemontcg.io as legacy fallback — TCGplayer (USD) and Cardmarket (EUR). '
     + '30-day change is estimated from Cardmarket 1-day vs 30-day sale averages; figures are indicative, not appraisals. '
-    + (hasStore
-      ? 'Your collection saves automatically and will be here next time.'
-      : 'No persistent storage in this environment — the collection lives in memory for this session.');
+    + storageNote;
 
   $('#searchBtn').addEventListener('click', doSearch);
   $('#searchInput').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
@@ -973,6 +1176,50 @@ function loadDemo() {
   $('#refreshBtn').addEventListener('click', refreshPrices);
   $('#bannerDismiss').addEventListener('click', hideBanner);
   $('#sortSel').addEventListener('change', e => { state.sort = e.target.value; renderCollection(); });
+
+  // profiles
+  $('#profileSel').addEventListener('change', e => {
+    state.activeId = e.target.value;
+    closeProfEdit();
+    scheduleSave(); renderCollection(); renderResults();
+  });
+  $('#profNew').addEventListener('click', () => openProfEdit('new'));
+  $('#profRen').addEventListener('click', () => openProfEdit('rename'));
+  $('#profOk').addEventListener('click', confirmProfEdit);
+  $('#profCancel').addEventListener('click', closeProfEdit);
+  $('#profName').addEventListener('keydown', e => {
+    if (e.key === 'Enter') confirmProfEdit();
+    if (e.key === 'Escape') closeProfEdit();
+  });
+  $('#profDel').addEventListener('click', () => {
+    const b = $('#profDel');
+    if (!state.profDelArmed) {
+      state.profDelArmed = true;
+      b.textContent = 'Sure?'; b.classList.add('armed');
+      setTimeout(() => {
+        state.profDelArmed = false;
+        b.textContent = '🗑'; b.classList.remove('armed');
+      }, 2600);
+      return;
+    }
+    state.profDelArmed = false;
+    b.textContent = '🗑'; b.classList.remove('armed');
+    const dead = activeProfile();
+    state.profiles = state.profiles.filter(p => p.id !== dead.id);
+    activeProfile(); // re-selects (or recreates) a profile
+    closeProfEdit();
+    scheduleSave(); renderCollection(); renderResults();
+    toast('Profile "' + dead.name + '" deleted');
+  });
+
+  // backup
+  $('#exportBtn').addEventListener('click', exportVault);
+  $('#importBtn').addEventListener('click', () => $('#importFile').click());
+  $('#importFile').addEventListener('change', e => {
+    const f = e.target.files && e.target.files[0];
+    if (f) importVault(f);
+    e.target.value = '';
+  });
 
   $('#clearBtn').addEventListener('click', () => {
     const b = $('#clearBtn');
@@ -982,15 +1229,15 @@ function loadDemo() {
       b.textContent = 'Really clear?'; b.classList.add('armed');
       setTimeout(() => {
         state.clearArmed = false;
-        b.textContent = 'Clear all'; b.classList.remove('armed');
+        b.textContent = 'Clear cards'; b.classList.remove('armed');
       }, 2600);
       return;
     }
     state.collection = [];
     state.clearArmed = false;
-    b.textContent = 'Clear all'; b.classList.remove('armed');
+    b.textContent = 'Clear cards'; b.classList.remove('armed');
     scheduleSave(); renderCollection();
-    toast('Collection cleared');
+    toast('Cleared all cards in "' + activeProfile().name + '"');
   });
 
   await loadSaved();
