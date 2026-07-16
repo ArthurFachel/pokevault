@@ -9,8 +9,7 @@ A Pokémon TCG collection tracker that runs entirely in the browser — no backe
 
 **Live demo →** https://arthurfachel.github.io/pokevault/
 
-<!-- Add a screenshot or GIF of the app here, e.g.: -->
-<!-- ![PokéVault screenshot](docs/screenshot.png) -->
+![PokéVault screenshot](docs/screenshot.png)
 
 ## Features
 
