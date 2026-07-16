@@ -1,0 +1,15 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Local backups exported from the app
+pokevault-backup-*.json
+
+# Node (in case tooling is added later)
+node_modules/
+npm-debug.log*
